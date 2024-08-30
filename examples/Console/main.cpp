@@ -4,7 +4,7 @@
 //  Created by Melo Yao on 3/24/15.
 //
 
-#include "../../src/sio_client.h"
+#include "sio_client.h"
 
 #include <functional>
 #include <iostream>
@@ -26,6 +26,9 @@
 #define MAIN_FUNC int main(int argc ,const char* args[])
 #endif
 
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
 using namespace sio;
 using namespace std;
 std::mutex _lock;
@@ -71,35 +74,79 @@ socket::ptr current_socket;
 
 void bind_events()
 {
-	current_socket->on("new message", sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
+	current_socket->on("data_RT", sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
                        {
-                           _lock.lock();
-                           string user = data->get_map()["username"]->get_string();
-                           string message = data->get_map()["message"]->get_string();
-                           EM(user<<":"<<message);
-                           _lock.unlock();
+                            std::cout<<"data_RT"<<std::endl;
                        }));
-    
-    current_socket->on("user joined",sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
-                       {
-                           _lock.lock();
-                           string user = data->get_map()["username"]->get_string();
-                           participants  = data->get_map()["numUsers"]->get_int();
-                           bool plural = participants !=1;
-                           
-                           //     abc "
-                           HIGHLIGHT(user<<" joined"<<"\nthere"<<(plural?" are ":"'s ")<< participants<<(plural?" participants":" participant"));
-                           _lock.unlock();
-                       }));
-    current_socket->on("user left", sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
-                       {
-                           _lock.lock();
-                           string user = data->get_map()["username"]->get_string();
-                           participants  = data->get_map()["numUsers"]->get_int();
-                           bool plural = participants !=1;
-                           HIGHLIGHT(user<<" left"<<"\nthere"<<(plural?" are ":"'s ")<< participants<<(plural?" participants":" participant"));
-                           _lock.unlock();
-                       }));
+
+}
+
+sio::message::ptr createObject(json o);
+
+sio::message::ptr createArray(json o)
+{
+    sio::message::ptr array = array_message::create();
+
+    for (json::iterator it = o.begin(); it != o.end(); ++it) {
+
+        auto v = it.value();
+        if (v.is_boolean())
+        {
+            array->get_vector().push_back(bool_message::create(v.get<bool>()));
+        }
+        else if (v.is_number_integer())
+        {
+            array->get_vector().push_back(int_message::create(v.get<int>()));
+        }
+        else if (v.is_string())
+        {
+            array->get_vector().push_back(string_message::create(v.get<string>()));
+        }
+        else if (v.is_array())
+        {
+            array->get_vector().push_back(createArray(v));
+        }
+        else if (v.is_object())
+        {
+            array->get_vector().push_back(createObject(v));
+        }
+    }
+    return array;
+}
+
+sio::message::ptr createObject(json o)
+{
+    sio::message::ptr object = object_message::create();
+
+    for (json::iterator it = o.begin(); it != o.end(); ++it)
+    {
+        auto key = it.key();
+        auto v = it.value();
+
+        if (v.is_boolean())
+        {
+            object->get_map()[key] = bool_message::create(v.get<bool>());
+        }
+        else if (v.is_number_integer())
+        {
+            object->get_map()[key] = int_message::create(v.get<int>());
+        }
+        else if (v.is_string())
+        {
+            object->get_map()[key] = string_message::create(v.get<std::string>());
+        }
+        else if (v.is_array())
+        {
+            json childObject = v;
+            object->get_map()[key] = createArray(v);
+        }
+        else if (v.is_object())
+        {
+            json childObject = v;
+            object->get_map()[key] = createObject(childObject);
+        }
+    }
+    return object;
 }
 
 MAIN_FUNC
@@ -111,14 +158,49 @@ MAIN_FUNC
     h.set_open_listener(std::bind(&connection_listener::on_connected, &l));
     h.set_close_listener(std::bind(&connection_listener::on_close, &l,std::placeholders::_1));
     h.set_fail_listener(std::bind(&connection_listener::on_fail, &l));
-    h.connect("http://127.0.0.1:3000");
+
+    h.set_reconnect_attempts(1000000);
+    h.set_reconnect_delay(2000);
+    h.set_reconnect_delay_max(10000);
+
+	current_socket = h.socket();
+    bind_events();
+
+    std::cout<<"Do Try Connect ..."<<std::endl;
+
+    h.connect("ws://openapi.sleepthing.com");
+    // h.connect("ws://127.0.0.1:8080");
     _lock.lock();
-    if(!connect_finish)
-    {
+    if(!connect_finish) {
         _cond.wait(_lock);
     }
     _lock.unlock();
-	current_socket = h.socket();
+
+    std::cout<<"Connect Success !!!"<<std::endl;
+
+    //message::list li( "{\"clientID\":\"B03508EE8A334D81\"}");
+    //li.push(string_message::create("economics"));
+    //current_socket->emit("categories", li);
+
+    // string cid = "[{\'clientID\':\'B03508EE8A334D81\'}]";
+    // string cid = "{\'clientID\':\'B03508EE8A334D81\'}";
+    // current_socket->emit("ASK_JOIN_C", cid);
+
+
+    // auto binary_msg = sio::binary_message::create(binary_data);
+
+
+    json j;
+    j["clientID"] = "B03508EE8A334D81";
+
+    sio::message::ptr object = createObject(j);
+    current_socket->emit("ASK_JOIN_C", object);
+
+
+    _lock.lock();
+    _cond.wait(_lock);
+    _lock.unlock();
+#if 0
 Login:
     string nickname;
     while (nickname.length() == 0) {
@@ -180,6 +262,7 @@ Login:
             _lock.unlock();
         }
     }
+    #endif
     HIGHLIGHT("Closing...");
     h.sync_close();
     h.clear_con_listeners();

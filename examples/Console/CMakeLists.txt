@@ -1,6 +1,7 @@
+PROJECT(sio_console_demo)
+
 cmake_minimum_required(VERSION 3.1.0 FATAL_ERROR)
 find_package(Threads REQUIRED)
-include(${CMAKE_CURRENT_SOURCE_DIR}/../../CMakeLists.txt)
 add_executable(sio_console_demo main.cpp)
 target_link_libraries(sio_console_demo sioclient)
 target_link_libraries(sio_console_demo Threads::Threads)
