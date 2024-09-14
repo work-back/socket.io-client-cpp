@@ -26,12 +26,121 @@
 #define MAIN_FUNC int main(int argc ,const char* args[])
 #endif
 
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
+
 using namespace sio;
 using namespace std;
 std::mutex _lock;
 
 std::condition_variable_any _cond;
 bool connect_finish = false;
+
+sio::message::ptr createObject(json o);
+
+nlohmann::json createJson(sio::message::ptr sio)
+{
+    // return json
+    nlohmann::json json;
+
+    try {
+        // browse flags, we consider it can only be array/vector or object/map
+        if (sio->get_flag() == sio::message::flag_array) {
+            for (int i = 0; i < int(sio->get_vector().size()); ++i) {
+                if (sio->get_vector()[i]->get_flag() == sio::message::flag_object ||
+                    sio->get_vector()[i]->get_flag() == sio::message::flag_array) {
+                    json[i] = createJson(sio->get_vector()[i]);
+                } else if (sio->get_vector()[i]->get_flag() == sio::message::flag_integer) {
+                    json[i] = sio->get_vector()[i]->get_int();
+                } else if (sio->get_vector()[i]->get_flag() == sio::message::flag_double) {
+                    json[i] = sio->get_vector()[i]->get_double();
+                } else if (sio->get_vector()[i]->get_flag() == sio::message::flag_string) {
+                    json[i] = sio->get_vector()[i]->get_string();
+                } else if (sio->get_vector()[i]->get_flag() == sio::message::flag_boolean) {
+                    json[i] = (sio->get_vector()[i]->get_bool() ? "true" : "false");
+                } else if (sio->get_vector()[i]->get_flag() == sio::message::flag_null) {
+                    // json[i] = "null"; // do not set json[i] so that it's set to json-null properly
+                } else {
+                    std::cout << "Unknown flag in vector: " << sio->get_flag() << ", i is " << i << std::endl;
+                }
+            }
+        } else if (sio->get_flag() == sio::message::flag_object) {
+            for (auto it = sio->get_map().cbegin(); it != sio->get_map().cend(); ++it) {
+                if (it->second->get_flag() == sio::message::flag_object ||
+                    it->second->get_flag() == sio::message::flag_array) {
+                    json[it->first] = createJson(it->second);
+                } else if (it->second->get_flag() == sio::message::flag_integer) {
+                    json[it->first] = it->second->get_int();
+                } else if (it->second->get_flag() == sio::message::flag_double) {
+                    json[it->first] = it->second->get_double();
+                } else if (it->second->get_flag() == sio::message::flag_string) {
+                    json[it->first] = it->second->get_string();
+                } else if (it->second->get_flag() == sio::message::flag_boolean) {
+                    json[it->first] = it->second->get_bool();
+                } else if (it->second->get_flag() == sio::message::flag_null) {
+                    // json[it->first] = "null"; // do not set json[i] so that it's set to json-null properly
+                } else {
+                    std::cout << "Unknown flag in object: " << sio->get_flag() << ", it first is " << it->first << std::endl;
+                }
+            }
+        } else {
+            std::cout << "Unknown flag in createJson function: " << sio->get_flag() << std::endl;
+        }
+    } catch (nlohmann::json::exception &e) {
+        std::cout << "JSON exception caught in " << __FUNCTION__ << " (message: " << e.what() << ")" << std::endl;
+    }
+
+    // return
+    return json;
+}
+
+sio::message::ptr createArray(json o)
+{
+    sio::message::ptr array = array_message::create();
+
+    for (json::iterator it = o.begin(); it != o.end(); ++it) {
+
+        auto v = it.value();
+        if (v.is_boolean()) {
+            array->get_vector().push_back(bool_message::create(v.get<bool>()));
+        } else if (v.is_number_integer()) {
+            array->get_vector().push_back(int_message::create(v.get<int>()));
+        } else if (v.is_string()) {
+            array->get_vector().push_back(string_message::create(v.get<string>()));
+        } else if (v.is_array()) {
+            array->get_vector().push_back(createArray(v));
+        } else if (v.is_object()) {
+            array->get_vector().push_back(createObject(v));
+        }
+    }
+    return array;
+}
+
+sio::message::ptr createObject(json o)
+{
+    sio::message::ptr object = object_message::create();
+
+    for (json::iterator it = o.begin(); it != o.end(); ++it) {
+        auto key = it.key();
+        auto v = it.value();
+
+        if (v.is_boolean()) {
+            object->get_map()[key] = bool_message::create(v.get<bool>());
+        } else if (v.is_number_integer()) {
+            object->get_map()[key] = int_message::create(v.get<int>());
+        } else if (v.is_string()) {
+            object->get_map()[key] = string_message::create(v.get<std::string>());
+        } else if (v.is_array()) {
+            json childObject = v;
+            object->get_map()[key] = createArray(v);
+        } else if (v.is_object()) {
+            json childObject = v;
+            object->get_map()[key] = createObject(childObject);
+        }
+    }
+    return object;
+}
 
 class connection_listener
 {
@@ -71,115 +180,53 @@ socket::ptr current_socket;
 
 void bind_events()
 {
-	current_socket->on("new message", sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
-                       {
-                           _lock.lock();
-                           string user = data->get_map()["username"]->get_string();
-                           string message = data->get_map()["message"]->get_string();
-                           EM(user<<":"<<message);
-                           _lock.unlock();
-                       }));
-    
-    current_socket->on("user joined",sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
-                       {
-                           _lock.lock();
-                           string user = data->get_map()["username"]->get_string();
-                           participants  = data->get_map()["numUsers"]->get_int();
-                           bool plural = participants !=1;
-                           
-                           //     abc "
-                           HIGHLIGHT(user<<" joined"<<"\nthere"<<(plural?" are ":"'s ")<< participants<<(plural?" participants":" participant"));
-                           _lock.unlock();
-                       }));
-    current_socket->on("user left", sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
-                       {
-                           _lock.lock();
-                           string user = data->get_map()["username"]->get_string();
-                           participants  = data->get_map()["numUsers"]->get_int();
-                           bool plural = participants !=1;
-                           HIGHLIGHT(user<<" left"<<"\nthere"<<(plural?" are ":"'s ")<< participants<<(plural?" participants":" participant"));
-                           _lock.unlock();
-                       }));
+	current_socket->on("data_RT", sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp)
+           {
+                std::cout << "data_RT" << std::endl;
+                std::cout << "flag:" << data->get_flag()  <<std::endl;
+                if (data->get_flag() == sio::message::flag_object ) {
+                    nlohmann::json j_data;
+                    j_data = createJson(data);
+                    std::cout << "data:" << j_data << std::endl;
+                }
+           }));
+
+           return;
 }
 
 MAIN_FUNC
 {
-
     sio::client h;
     connection_listener l(h);
     
     h.set_open_listener(std::bind(&connection_listener::on_connected, &l));
     h.set_close_listener(std::bind(&connection_listener::on_close, &l,std::placeholders::_1));
     h.set_fail_listener(std::bind(&connection_listener::on_fail, &l));
-    h.connect("http://127.0.0.1:3000");
+
+    h.connect("ws://openapi.sleepthing.com");
+
+    std::cout<<"Do Try Connect ..."<<std::endl;
     _lock.lock();
-    if(!connect_finish)
-    {
+    if(!connect_finish) {
         _cond.wait(_lock);
     }
     _lock.unlock();
+    std::cout<<"Connect Success !!!"<<std::endl;
+
 	current_socket = h.socket();
-Login:
-    string nickname;
-    while (nickname.length() == 0) {
-        HIGHLIGHT("Type your nickname:");
-        
-        getline(cin, nickname);
-    }
-	current_socket->on("login", sio::socket::event_listener_aux([&](string const& name, message::ptr const& data, bool isAck,message::list &ack_resp){
-        _lock.lock();
-        participants = data->get_map()["numUsers"]->get_int();
-        bool plural = participants !=1;
-        HIGHLIGHT("Welcome to Socket.IO Chat-\nthere"<<(plural?" are ":"'s ")<< participants<<(plural?" participants":" participant"));
-        _cond.notify_all();
-        _lock.unlock();
-        current_socket->off("login");
-    }));
-    current_socket->emit("add user", nickname);
-    _lock.lock();
-    if (participants<0) {
-        _cond.wait(_lock);
-    }
-    _lock.unlock();
+
     bind_events();
-    
-    HIGHLIGHT("Start to chat,commands:\n'$exit' : exit chat\n'$nsp <namespace>' : change namespace");
-    for (std::string line; std::getline(std::cin, line);) {
-        if(line.length()>0)
-        {
-            if(line == "$exit")
-            {
-                break;
-            }
-            else if(line.length() > 5&&line.substr(0,5) == "$nsp ")
-            {
-                string new_nsp = line.substr(5);
-                if(new_nsp == current_socket->get_namespace())
-                {
-                    continue;
-                }
-                current_socket->off_all();
-                current_socket->off_error();
-                //per socket.io, default nsp should never been closed.
-                if(current_socket->get_namespace() != "/")
-                {
-                    current_socket->close();
-                }
-                current_socket = h.socket(new_nsp);
-                bind_events();
-                //if change to default nsp, we do not need to login again (since it is not closed).
-                if(current_socket->get_namespace() == "/")
-                {
-                    continue;
-                }
-                goto Login;
-            }
-            current_socket->emit("new message", line);
-            _lock.lock();
-            EM("\t\t\t"<<line<<":"<<"You");
-            _lock.unlock();
-        }
-    }
+
+    json j;
+    j["clientID"] = "B03508EE8A334D81";
+
+    sio::message::ptr object = createObject(j);
+    current_socket->emit("ASK_JOIN_C", object);
+
+    _lock.lock();
+    _cond.wait(_lock);
+    _lock.unlock();
+
     HIGHLIGHT("Closing...");
     h.sync_close();
     h.clear_con_listeners();
