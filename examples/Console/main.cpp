@@ -203,7 +203,7 @@ MAIN_FUNC
     h.set_close_listener(std::bind(&connection_listener::on_close, &l,std::placeholders::_1));
     h.set_fail_listener(std::bind(&connection_listener::on_fail, &l));
 
-    h.connect("ws://openapi.sleepthing.com");
+    h.connect("https://openapi.sleepthing.com");
 
     std::cout<<"Do Try Connect ..."<<std::endl;
     _lock.lock();
@@ -230,6 +230,7 @@ MAIN_FUNC
     HIGHLIGHT("Closing...");
     h.sync_close();
     h.clear_con_listeners();
+
 	return 0;
 }
 
